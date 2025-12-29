@@ -61,9 +61,11 @@ export async function POST(request: NextRequest) {
     const resend = getResend()
     if (resend && process.env.RECIPIENT_EMAIL) {
       try {
+        // Support multiple recipients (comma-separated)
+        const recipients = process.env.RECIPIENT_EMAIL.split(',').map(e => e.trim())
         await resend.emails.send({
           from: process.env.SENDER_EMAIL || 'Sesler <noreply@zke-solutions.com>',
-          to: process.env.RECIPIENT_EMAIL,
+          to: recipients,
           subject: `New Voice Message: ${title || 'Untitled'}`,
           html: `
             <!DOCTYPE html>
@@ -98,7 +100,7 @@ export async function POST(request: NextRequest) {
                 </p>
                 
                 <p class="footer">
-                  From DC with care
+                  DC & Izmir
                 </p>
               </div>
             </body>
