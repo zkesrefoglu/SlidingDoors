@@ -16,9 +16,15 @@ export default function SeslerPage() {
   const [messages, setMessages] = useState<VoiceMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [currentPlaying, setCurrentPlaying] = useState<string | null>(null)
+  const [readMessages, setReadMessages] = useState<Set<string>>(new Set())
   const audioRefs = useRef<{ [key: string]: HTMLAudioElement | null }>({})
 
   useEffect(() => {
+    // Load read status from localStorage
+    const stored = localStorage.getItem('sesler-read')
+    if (stored) {
+      setReadMessages(new Set(JSON.parse(stored)))
+    }
     fetchMessages()
   }, [])
 
@@ -36,22 +42,20 @@ export default function SeslerPage() {
     }
   }
 
+  const markAsRead = (url: string) => {
+    const newRead = new Set(readMessages)
+    newRead.add(url)
+    setReadMessages(newRead)
+    localStorage.setItem('sesler-read', JSON.stringify([...newRead]))
+  }
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
-    // Convert to Turkey time for display
     const turkeyTime = toZonedTime(date, 'Europe/Istanbul')
     return format(turkeyTime, "d MMMM yyyy 'at' HH:mm")
   }
 
-  const formatDuration = (audio: HTMLAudioElement | null) => {
-    if (!audio || !audio.duration || isNaN(audio.duration)) return ''
-    const mins = Math.floor(audio.duration / 60)
-    const secs = Math.floor(audio.duration % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
   const handlePlay = (url: string) => {
-    // Pause any currently playing audio
     if (currentPlaying && currentPlaying !== url) {
       const currentAudio = audioRefs.current[currentPlaying]
       if (currentAudio) {
@@ -59,11 +63,14 @@ export default function SeslerPage() {
       }
     }
     setCurrentPlaying(url)
+    markAsRead(url)
   }
 
   const handleEnded = () => {
     setCurrentPlaying(null)
   }
+
+  const unreadCount = messages.filter(m => !readMessages.has(m.url)).length
 
   if (loading) {
     return (
@@ -80,18 +87,13 @@ export default function SeslerPage() {
     <div className="min-h-screen py-12 px-4">
       <div className="max-w-2xl mx-auto">
         {/* Header */}
-        <header className="text-center mb-16">
+        <header className="text-center mb-12">
           <h1 className="font-display text-4xl md:text-5xl text-burgundy-700 mb-3">
             Sesler
           </h1>
           <p className="font-serif text-lg text-burgundy-400 italic">
-            Voices across the distance
+            {unreadCount > 0 ? `${unreadCount} new` : 'All caught up'}
           </p>
-          <div className="mt-6 flex justify-center">
-            <svg className="w-24 h-1 text-warm-400" viewBox="0 0 100 4">
-              <path d="M0 2 Q25 0 50 2 Q75 4 100 2" stroke="currentColor" strokeWidth="1" fill="none" />
-            </svg>
-          </div>
         </header>
 
         {/* Messages */}
@@ -105,70 +107,83 @@ export default function SeslerPage() {
             <p className="font-serif text-xl text-burgundy-500 italic">
               No messages yet...
             </p>
-            <p className="font-serif text-burgundy-300 mt-2">
-              New voices will appear here soon
-            </p>
           </div>
         ) : (
-          <div className="space-y-6">
-            {messages.map((message, index) => (
-              <article 
-                key={message.url}
-                className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 warm-glow border border-warm-200/50 transition-all duration-300 hover:bg-white/80"
-              >
-                <div className="flex items-start gap-4">
-                  {/* Play indicator */}
-                  <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center transition-colors duration-300 ${
-                    currentPlaying === message.url 
-                      ? 'bg-burgundy-500 text-white' 
-                      : 'bg-warm-100 text-burgundy-500'
-                  }`}>
-                    {currentPlaying === message.url ? (
-                      <svg className="w-5 h-5 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="6" y="4" width="4" height="16" rx="1" />
-                        <rect x="14" y="4" width="4" height="16" rx="1" />
-                      </svg>
-                    ) : (
-                      <span className="font-display text-lg">{messages.length - index}</span>
-                    )}
-                  </div>
+          <div className="space-y-4">
+            {messages.map((message, index) => {
+              const isUnread = !readMessages.has(message.url)
+              const isPlaying = currentPlaying === message.url
+              
+              return (
+                <article 
+                  key={message.url}
+                  className={`rounded-2xl p-5 transition-all duration-300 ${
+                    isUnread 
+                      ? 'bg-burgundy-50 border-2 border-burgundy-200' 
+                      : 'bg-white/60 border border-warm-200/50'
+                  }`}
+                >
+                  <div className="flex items-start gap-4">
+                    {/* Unread indicator */}
+                    <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors duration-300 ${
+                      isPlaying 
+                        ? 'bg-burgundy-500 text-white' 
+                        : isUnread
+                          ? 'bg-burgundy-500 text-white'
+                          : 'bg-warm-100 text-burgundy-400'
+                    }`}>
+                      {isPlaying ? (
+                        <svg className="w-4 h-4 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+                          <rect x="6" y="4" width="4" height="16" rx="1" />
+                          <rect x="14" y="4" width="4" height="16" rx="1" />
+                        </svg>
+                      ) : isUnread ? (
+                        <span className="text-xs font-bold">NEW</span>
+                      ) : (
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                        </svg>
+                      )}
+                    </div>
 
-                  <div className="flex-grow min-w-0">
-                    {/* Title/Date */}
-                    <h2 className="font-display text-lg text-burgundy-700 mb-1">
-                      {message.title || `Message ${messages.length - index}`}
-                    </h2>
-                    <p className="font-serif text-sm text-burgundy-400 mb-4">
-                      {formatDate(message.uploadedAt)}
-                    </p>
+                    <div className="flex-grow min-w-0">
+                      {/* Title/Date */}
+                      <h2 className={`font-display text-lg mb-1 ${isUnread ? 'text-burgundy-700 font-semibold' : 'text-burgundy-600'}`}>
+                        {message.title || `Message ${messages.length - index}`}
+                      </h2>
+                      <p className="font-serif text-sm text-burgundy-400 mb-3">
+                        {formatDate(message.uploadedAt)}
+                      </p>
 
-                    {/* Audio Player */}
-                    <audio
-                      ref={el => { audioRefs.current[message.url] = el }}
-                      src={message.url}
-                      controls
-                      className="w-full h-10 rounded-lg"
-                      onPlay={() => handlePlay(message.url)}
-                      onEnded={handleEnded}
-                      onPause={() => currentPlaying === message.url && setCurrentPlaying(null)}
-                      preload="metadata"
-                    />
+                      {/* Audio Player */}
+                      <audio
+                        ref={el => { audioRefs.current[message.url] = el }}
+                        src={message.url}
+                        controls
+                        className="w-full h-10 rounded-lg"
+                        onPlay={() => handlePlay(message.url)}
+                        onEnded={handleEnded}
+                        onPause={() => currentPlaying === message.url && setCurrentPlaying(null)}
+                        preload="metadata"
+                      />
+                    </div>
                   </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              )
+            })}
           </div>
         )}
 
         {/* Footer */}
-        <footer className="mt-16 text-center">
-          <div className="flex justify-center mb-4">
-            <svg className="w-24 h-1 text-warm-400" viewBox="0 0 100 4">
-              <path d="M0 2 Q25 0 50 2 Q75 4 100 2" stroke="currentColor" strokeWidth="1" fill="none" />
-            </svg>
-          </div>
-          <p className="font-serif text-sm text-burgundy-300 italic">
-            DC & Izmir, {new Date().getFullYear()}
+        <footer className="mt-12 text-center">
+          <a 
+            href="/upload" 
+            className="inline-block px-6 py-3 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors"
+          >
+            Record a message
+          </a>
+          <p className="font-serif text-sm text-burgundy-300 mt-6 italic">
+            DC & Izmir
           </p>
         </footer>
       </div>
