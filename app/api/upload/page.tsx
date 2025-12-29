@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState } from 'next/navigation'
 
 export default function WelcomePage() {
   const [entered, setEntered] = useState(false)
