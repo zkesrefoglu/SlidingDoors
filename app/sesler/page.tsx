@@ -46,7 +46,7 @@ export default function SeslerPage() {
     const newRead = new Set(readMessages)
     newRead.add(url)
     setReadMessages(newRead)
-    localStorage.setItem('sesler-read', JSON.stringify([...newRead]))
+    localStorage.setItem('sesler-read', JSON.stringify(Array.from(newRead)))
   }
 
   const formatDate = (dateString: string) => {
