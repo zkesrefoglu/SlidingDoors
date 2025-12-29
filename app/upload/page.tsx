@@ -1,24 +1,33 @@
 'use client'
 
-import { useState, useRef, FormEvent } from 'react'
+import { useState, useRef, useEffect } from 'react'
 
 export default function UploadPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   
-  const [file, setFile] = useState<File | null>(null)
-  const [title, setTitle] = useState('')
+  const [isRecording, setIsRecording] = useState(false)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [duration, setDuration] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [statusMessage, setStatusMessage] = useState('')
   
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
 
-  const handleAuth = (e: FormEvent) => {
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+    }
+  }, [audioUrl])
+
+  const handleAuth = (e: React.FormEvent) => {
     e.preventDefault()
-    // Check password against environment variable (will be validated server-side for real auth)
-    // For now, we'll do a simple client-side check that matches the env var
     if (password === process.env.NEXT_PUBLIC_UPLOAD_PASSWORD || password === 'sesler2024') {
       setIsAuthenticated(true)
       setAuthError('')
@@ -27,109 +36,133 @@ export default function UploadPage() {
     }
   }
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0]
-    if (selectedFile) {
-      // Accept audio files
-      if (selectedFile.type.startsWith('audio/') || 
-          selectedFile.name.endsWith('.m4a') || 
-          selectedFile.name.endsWith('.mp3') ||
-          selectedFile.name.endsWith('.wav')) {
-        setFile(selectedFile)
-        setUploadStatus('idle')
-        
-        // Auto-generate title from filename if not set
-        if (!title) {
-          const baseName = selectedFile.name.replace(/\.[^/.]+$/, '')
-          setTitle(baseName)
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      chunksRef.current = []
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data)
         }
-      } else {
-        setStatusMessage('Please select an audio file')
-        setUploadStatus('error')
+      }
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/mp4' })
+        setAudioBlob(blob)
+        setAudioUrl(URL.createObjectURL(blob))
+        stream.getTracks().forEach(track => track.stop())
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+      setDuration(0)
+      setUploadStatus('idle')
+      
+      timerRef.current = setInterval(() => {
+        setDuration(d => d + 1)
+      }, 1000)
+    } catch (err) {
+      setStatusMessage('Could not access microphone')
+      setUploadStatus('error')
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
       }
     }
   }
 
-  const handleUpload = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!file) return
+  const discardRecording = () => {
+    setAudioBlob(null)
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    setAudioUrl(null)
+    setDuration(0)
+    setUploadStatus('idle')
+  }
+
+  const uploadRecording = async () => {
+    if (!audioBlob) return
 
     setUploading(true)
     setUploadStatus('idle')
 
     try {
       const formData = new FormData()
-      formData.append('file', file)
-      formData.append('title', title || file.name)
+      const filename = `voice-${new Date().toISOString()}.m4a`
+      formData.append('file', audioBlob, filename)
+      formData.append('title', new Date().toLocaleDateString('en-US', { 
+        month: 'long', 
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+      }))
 
       const res = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
       })
 
-      const data = await res.json()
-
       if (res.ok) {
         setUploadStatus('success')
-        setStatusMessage('Voice message uploaded successfully! Email notification sent.')
-        setFile(null)
-        setTitle('')
-        if (fileInputRef.current) {
-          fileInputRef.current.value = ''
-        }
+        setStatusMessage('Sent!')
+        setAudioBlob(null)
+        if (audioUrl) URL.revokeObjectURL(audioUrl)
+        setAudioUrl(null)
+        setDuration(0)
       } else {
+        const data = await res.json()
         setUploadStatus('error')
-        setStatusMessage(data.error || 'Upload failed')
+        setStatusMessage(data.error || 'Failed to send')
       }
     } catch (error) {
       setUploadStatus('error')
-      setStatusMessage('Network error. Please try again.')
+      setStatusMessage('Network error')
     } finally {
       setUploading(false)
     }
   }
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   // Login screen
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center py-12 px-4">
-        <div className="w-full max-w-md">
+        <div className="w-full max-w-sm">
           <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-8 warm-glow border border-warm-200/50">
-            <h1 className="font-display text-3xl text-burgundy-700 text-center mb-2">
+            <h1 className="font-display text-3xl text-burgundy-700 text-center mb-8">
               Sesler
             </h1>
-            <p className="font-serif text-burgundy-400 text-center italic mb-8">
-              Private upload portal
-            </p>
 
             <form onSubmit={handleAuth} className="space-y-4">
-              <div>
-                <label htmlFor="password" className="block font-serif text-sm text-burgundy-600 mb-2">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  id="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-warm-200 bg-white/80 font-serif text-burgundy-700 placeholder-burgundy-300 focus:outline-none focus:ring-2 focus:ring-burgundy-300 focus:border-transparent transition-all"
-                  placeholder="Enter password"
-                />
-              </div>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-warm-200 bg-white/80 font-serif text-burgundy-700 placeholder-burgundy-300 focus:outline-none focus:ring-2 focus:ring-burgundy-300 text-center"
+                placeholder="Password"
+              />
 
               {authError && (
-                <p className="font-serif text-sm text-red-500">{authError}</p>
+                <p className="font-serif text-sm text-red-500 text-center">{authError}</p>
               )}
 
               <button
                 type="submit"
-                className="w-full py-3 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors duration-200"
+                className="w-full py-3 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors"
               >
                 Enter
               </button>
@@ -140,127 +173,99 @@ export default function UploadPage() {
     )
   }
 
-  // Upload interface
+  // Recording interface
   return (
-    <div className="min-h-screen py-12 px-4">
-      <div className="max-w-xl mx-auto">
-        {/* Header */}
-        <header className="text-center mb-12">
-          <h1 className="font-display text-4xl text-burgundy-700 mb-2">
-            Upload
-          </h1>
-          <p className="font-serif text-burgundy-400 italic">
-            Share your voice
-          </p>
-        </header>
+    <div className="min-h-screen flex items-center justify-center py-12 px-4">
+      <div className="w-full max-w-sm text-center">
+        
+        <h1 className="font-display text-3xl text-burgundy-700 mb-12">
+          Sesler
+        </h1>
 
-        {/* Upload Form */}
-        <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-8 warm-glow border border-warm-200/50">
-          <form onSubmit={handleUpload} className="space-y-6">
-            {/* Title */}
-            <div>
-              <label htmlFor="title" className="block font-serif text-sm text-burgundy-600 mb-2">
-                Title (optional)
-              </label>
-              <input
-                type="text"
-                id="title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-warm-200 bg-white/80 font-serif text-burgundy-700 placeholder-burgundy-300 focus:outline-none focus:ring-2 focus:ring-burgundy-300 focus:border-transparent transition-all"
-                placeholder="Give this message a title..."
-              />
-            </div>
+        {/* Status message */}
+        {uploadStatus !== 'idle' && (
+          <div className={`mb-8 p-4 rounded-xl font-serif ${
+            uploadStatus === 'success' 
+              ? 'bg-sage-100 text-sage-600' 
+              : 'bg-red-50 text-red-600'
+          }`}>
+            {statusMessage}
+          </div>
+        )}
 
-            {/* File Upload */}
-            <div>
-              <label className="block font-serif text-sm text-burgundy-600 mb-2">
-                Voice Recording
-              </label>
-              <div 
-                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 cursor-pointer hover:border-burgundy-400 hover:bg-warm-50/50 ${
-                  file ? 'border-burgundy-400 bg-warm-50/50' : 'border-warm-300'
-                }`}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="audio/*,.m4a,.mp3,.wav"
-                  onChange={handleFileSelect}
-                  className="hidden"
-                />
-                
-                {file ? (
-                  <div>
-                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-burgundy-100 flex items-center justify-center">
-                      <svg className="w-6 h-6 text-burgundy-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                      </svg>
-                    </div>
-                    <p className="font-serif text-burgundy-700">{file.name}</p>
-                    <p className="font-serif text-sm text-burgundy-400 mt-1">
-                      {formatFileSize(file.size)}
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="w-12 h-12 mx-auto mb-3 rounded-full bg-warm-100 flex items-center justify-center">
-                      <svg className="w-6 h-6 text-burgundy-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                      </svg>
-                    </div>
-                    <p className="font-serif text-burgundy-500">
-                      Click to select an audio file
-                    </p>
-                    <p className="font-serif text-sm text-burgundy-300 mt-1">
-                      M4A, MP3, WAV supported
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Status Messages */}
-            {uploadStatus !== 'idle' && (
-              <div className={`p-4 rounded-xl font-serif text-sm ${
-                uploadStatus === 'success' 
-                  ? 'bg-sage-100 text-sage-600 border border-sage-200' 
-                  : 'bg-red-50 text-red-600 border border-red-200'
-              }`}>
-                {statusMessage}
-              </div>
+        {/* Recording button */}
+        {!audioBlob && (
+          <button
+            onClick={isRecording ? stopRecording : startRecording}
+            className={`w-32 h-32 rounded-full flex items-center justify-center mx-auto transition-all duration-300 ${
+              isRecording 
+                ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
+                : 'bg-burgundy-500 hover:bg-burgundy-600'
+            }`}
+          >
+            {isRecording ? (
+              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
             )}
+          </button>
+        )}
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={!file || uploading}
-              className={`w-full py-4 px-6 font-serif text-lg rounded-xl transition-all duration-200 ${
-                !file || uploading
-                  ? 'bg-warm-200 text-warm-400 cursor-not-allowed'
-                  : 'bg-burgundy-500 hover:bg-burgundy-600 text-white'
-              }`}
-            >
-              {uploading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Uploading...
-                </span>
-              ) : (
-                'Upload & Send Notification'
-              )}
-            </button>
-          </form>
-        </div>
+        {/* Timer */}
+        {(isRecording || audioBlob) && (
+          <p className="font-serif text-2xl text-burgundy-600 mt-6">
+            {formatTime(duration)}
+          </p>
+        )}
 
-        {/* Help Text */}
-        <p className="mt-8 text-center font-serif text-sm text-burgundy-300 italic">
-          Voice recordings from your iPhone will be automatically uploaded and a notification email will be sent.
-        </p>
+        {/* Instructions */}
+        {!audioBlob && !isRecording && (
+          <p className="font-serif text-burgundy-400 mt-6">
+            Tap to record
+          </p>
+        )}
+
+        {isRecording && (
+          <p className="font-serif text-burgundy-400 mt-4">
+            Tap to stop
+          </p>
+        )}
+
+        {/* Playback and actions */}
+        {audioBlob && audioUrl && (
+          <div className="mt-8 space-y-6">
+            <audio src={audioUrl} controls className="w-full" />
+            
+            <div className="flex gap-4">
+              <button
+                onClick={discardRecording}
+                className="flex-1 py-3 px-4 bg-warm-200 hover:bg-warm-300 text-burgundy-600 font-serif rounded-xl transition-colors"
+              >
+                Discard
+              </button>
+              <button
+                onClick={uploadRecording}
+                disabled={uploading}
+                className="flex-1 py-3 px-4 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors disabled:opacity-50"
+              >
+                {uploading ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Link to listen */}
+        <a 
+          href="/sesler" 
+          className="inline-block mt-12 font-serif text-sm text-burgundy-400 hover:text-burgundy-600 transition-colors"
+        >
+          Listen to messages
+        </a>
       </div>
     </div>
   )
