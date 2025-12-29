@@ -41,21 +41,19 @@ export default function WelcomePage() {
     <div className="min-h-screen flex items-center justify-center py-12 px-4">
       <div className="w-full max-w-md text-center">
         
-        {/* Header */}
         <h1 className="font-display text-4xl text-burgundy-700 mb-2">
           Sesler
         </h1>
         <p className="font-serif text-burgundy-400 italic mb-12">
-          Just listen
+          Ziya & Gulin
         </p>
 
-        {/* Two simple buttons */}
         <div className="space-y-4">
           <a 
             href="/upload"
             className="block w-full py-4 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif text-lg rounded-xl transition-all duration-300"
           >
-            Share Your Voice
+            Record & Send
           </a>
           
           <a 
@@ -66,15 +64,9 @@ export default function WelcomePage() {
           </a>
         </div>
 
-        {/* Footer */}
-        <div className="mt-16">
-          <p className="font-serif text-sm text-burgundy-300">
-            Ziya & Gulin
-          </p>
-          <p className="font-serif text-xs text-burgundy-200 mt-1">
-            Friends since 1987
-          </p>
-        </div>
+        <p className="font-serif text-xs text-burgundy-200 mt-16">
+          Friends since 1987
+        </p>
       </div>
     </div>
   )

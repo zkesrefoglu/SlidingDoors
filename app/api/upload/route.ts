@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
                 .message-box { background: #F9EDE3; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
                 .label { color: #8B4444; font-size: 14px; margin-bottom: 4px; }
                 .value { color: #4A2323; font-size: 18px; }
-                .button { display: inline-block; background: #8B4444; color: white; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-size: 16px; }
+                .button { display: inline-block; background: #4A2323; color: #FFFFFF; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-size: 16px; font-weight: 500; }
                 .footer { margin-top: 32px; text-align: center; color: #B86B6B; font-size: 14px; font-style: italic; }
               </style>
             </head>
