@@ -7,6 +7,7 @@ export default function UploadPage() {
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   
+  const [sender, setSender] = useState<'dc' | 'izmir' | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -90,7 +91,7 @@ export default function UploadPage() {
   }
 
   const uploadRecording = async () => {
-    if (!audioBlob) return
+    if (!audioBlob || !sender) return
 
     setUploading(true)
     setUploadStatus('idle')
@@ -99,6 +100,7 @@ export default function UploadPage() {
       const formData = new FormData()
       const filename = `voice-${new Date().toISOString()}.m4a`
       formData.append('file', audioBlob, filename)
+      formData.append('sender', sender)
       formData.append('title', new Date().toLocaleDateString('en-US', { 
         month: 'long', 
         day: 'numeric',
@@ -173,14 +175,54 @@ export default function UploadPage() {
     )
   }
 
+  // Sender selection screen
+  if (!sender) {
+    return (
+      <div className="min-h-screen flex items-center justify-center py-12 px-4">
+        <div className="w-full max-w-sm text-center">
+          <h1 className="font-display text-3xl text-burgundy-700 mb-2">
+            Sesler
+          </h1>
+          <p className="font-serif text-burgundy-400 italic mb-10">
+            Who is this?
+          </p>
+
+          <div className="space-y-4">
+            <button
+              onClick={() => setSender('dc')}
+              className="w-full py-4 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif text-lg rounded-xl transition-all duration-300"
+            >
+              Ziya (DC)
+            </button>
+            <button
+              onClick={() => setSender('izmir')}
+              className="w-full py-4 px-6 bg-warm-500 hover:bg-warm-400 text-white font-serif text-lg rounded-xl transition-all duration-300"
+            >
+              Gulin (Izmir)
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Recording interface
   return (
     <div className="min-h-screen flex items-center justify-center py-12 px-4">
       <div className="w-full max-w-sm text-center">
         
-        <h1 className="font-display text-3xl text-burgundy-700 mb-12">
+        <h1 className="font-display text-3xl text-burgundy-700 mb-2">
           Sesler
         </h1>
+        <p className="font-serif text-burgundy-400 mb-8">
+          From <span className="font-semibold">{sender === 'dc' ? 'DC' : 'Izmir'}</span>
+          <button 
+            onClick={() => setSender(null)} 
+            className="ml-2 text-burgundy-300 hover:text-burgundy-500 text-sm"
+          >
+            (change)
+          </button>
+        </p>
 
         {/* Status message */}
         {uploadStatus !== 'idle' && (

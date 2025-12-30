@@ -10,6 +10,7 @@ interface VoiceMessage {
   uploadedAt: string
   size: number
   title?: string
+  sender?: string
 }
 
 export default function SeslerPage() {
@@ -148,9 +149,20 @@ export default function SeslerPage() {
 
                     <div className="flex-grow min-w-0">
                       {/* Title/Date */}
-                      <h2 className={`font-display text-lg mb-1 ${isUnread ? 'text-burgundy-700 font-semibold' : 'text-burgundy-600'}`}>
-                        {message.title || `Message ${messages.length - index}`}
-                      </h2>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h2 className={`font-display text-lg ${isUnread ? 'text-burgundy-700 font-semibold' : 'text-burgundy-600'}`}>
+                          {message.title || `Message ${messages.length - index}`}
+                        </h2>
+                        {message.sender && (
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${
+                            message.sender === 'dc' 
+                              ? 'bg-burgundy-100 text-burgundy-600' 
+                              : 'bg-warm-200 text-warm-600'
+                          }`}>
+                            {message.sender === 'dc' ? 'DC' : 'Izmir'}
+                          </span>
+                        )}
+                      </div>
                       <p className="font-serif text-sm text-burgundy-400 mb-3">
                         {formatDate(message.uploadedAt)}
                       </p>

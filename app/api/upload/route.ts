@@ -15,6 +15,7 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData()
     const file = formData.get('file') as File
     const title = formData.get('title') as string
+    const sender = formData.get('sender') as string || 'unknown'
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
@@ -47,6 +48,7 @@ export async function POST(request: NextRequest) {
       title: title || `Message from ${new Date().toLocaleDateString()}`,
       uploadedAt: new Date().toISOString(),
       size: file.size,
+      sender: sender,
     }
 
     // Store metadata in a separate blob
@@ -66,7 +68,7 @@ export async function POST(request: NextRequest) {
         await resend.emails.send({
           from: process.env.SENDER_EMAIL || 'Sesler <noreply@zke-solutions.com>',
           to: recipients,
-          subject: `New Voice Message: ${title || 'Untitled'}`,
+          subject: `New Voice from ${sender === 'dc' ? 'DC' : sender === 'izmir' ? 'Izmir' : 'Unknown'}: ${title || 'Untitled'}`,
           html: `
             <!DOCTYPE html>
             <html>
@@ -86,7 +88,7 @@ export async function POST(request: NextRequest) {
             <body>
               <div class="container">
                 <h1>Sesler</h1>
-                <p class="subtitle">A new voice awaits...</p>
+                <p class="subtitle">A new voice from ${sender === 'dc' ? 'DC' : sender === 'izmir' ? 'Izmir' : 'a friend'}...</p>
                 
                 <div class="message-box">
                   <p class="label">Title</p>
