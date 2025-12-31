@@ -1,203 +1,433 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { format } from 'date-fns'
-import { toZonedTime } from 'date-fns-tz'
+import { useState, useRef, useEffect } from 'react'
 
-interface VoiceMessage {
-  url: string
-  pathname: string
-  uploadedAt: string
-  size: number
-  title?: string
-  sender?: string
-}
-
-export default function SeslerPage() {
-  const [messages, setMessages] = useState<VoiceMessage[]>([])
-  const [loading, setLoading] = useState(true)
-  const [currentPlaying, setCurrentPlaying] = useState<string | null>(null)
-  const [readMessages, setReadMessages] = useState<Set<string>>(new Set())
-  const audioRefs = useRef<{ [key: string]: HTMLAudioElement | null }>({})
+export default function UploadPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  
+  const [sender, setSender] = useState<'dc' | 'izmir' | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [duration, setDuration] = useState(0)
+  const [uploading, setUploading] = useState(false)
+  const [compressing, setCompressing] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [statusMessage, setStatusMessage] = useState('')
+  
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
 
   useEffect(() => {
-    // Load read status from localStorage
-    const stored = localStorage.getItem('sesler-read')
-    if (stored) {
-      setReadMessages(new Set(JSON.parse(stored)))
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+      if (audioContextRef.current) audioContextRef.current.close()
     }
-    fetchMessages()
-  }, [])
+  }, [audioUrl])
 
-  const fetchMessages = async () => {
+  const handleAuth = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (password === process.env.NEXT_PUBLIC_UPLOAD_PASSWORD || password === 'sesler2024') {
+      setIsAuthenticated(true)
+      setAuthError('')
+    } else {
+      setAuthError('Incorrect password')
+    }
+  }
+
+  // Compress audio using Web Audio API
+  const compressAudio = async (blob: Blob): Promise<Blob> => {
+    setCompressing(true)
     try {
-      const res = await fetch('/api/messages')
+      const audioContext = new AudioContext({ sampleRate: 22050 }) // Lower sample rate
+      audioContextRef.current = audioContext
+      
+      const arrayBuffer = await blob.arrayBuffer()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+      
+      // Convert to mono and downsample
+      const offlineContext = new OfflineAudioContext(
+        1, // mono
+        audioBuffer.duration * 22050,
+        22050 // lower sample rate
+      )
+      
+      const source = offlineContext.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(offlineContext.destination)
+      source.start()
+      
+      const renderedBuffer = await offlineContext.startRendering()
+      
+      // Convert to WAV
+      const wavBlob = audioBufferToWav(renderedBuffer)
+      
+      return wavBlob
+    } catch (error) {
+      console.error('Compression failed, using original:', error)
+      return blob
+    } finally {
+      setCompressing(false)
+    }
+  }
+
+  // Convert AudioBuffer to WAV blob
+  const audioBufferToWav = (buffer: AudioBuffer): Blob => {
+    const numChannels = buffer.numberOfChannels
+    const sampleRate = buffer.sampleRate
+    const format = 1 // PCM
+    const bitDepth = 16
+    
+    const bytesPerSample = bitDepth / 8
+    const blockAlign = numChannels * bytesPerSample
+    
+    const data = buffer.getChannelData(0)
+    const samples = data.length
+    const dataSize = samples * blockAlign
+    const bufferSize = 44 + dataSize
+    
+    const arrayBuffer = new ArrayBuffer(bufferSize)
+    const view = new DataView(arrayBuffer)
+    
+    // WAV header
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i))
+      }
+    }
+    
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + dataSize, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, format, true)
+    view.setUint16(22, numChannels, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * blockAlign, true)
+    view.setUint16(32, blockAlign, true)
+    view.setUint16(34, bitDepth, true)
+    writeString(36, 'data')
+    view.setUint32(40, dataSize, true)
+    
+    // Write audio data
+    let offset = 44
+    for (let i = 0; i < samples; i++) {
+      const sample = Math.max(-1, Math.min(1, data[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true)
+      offset += 2
+    }
+    
+    return new Blob([arrayBuffer], { type: 'audio/wav' })
+  }
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      chunksRef.current = []
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data)
+        }
+      }
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/mp4' })
+        setAudioBlob(blob)
+        setAudioUrl(URL.createObjectURL(blob))
+        stream.getTracks().forEach(track => track.stop())
+      }
+
+      mediaRecorder.start()
+      setIsRecording(true)
+      setDuration(0)
+      setUploadStatus('idle')
+      
+      timerRef.current = setInterval(() => {
+        setDuration(d => d + 1)
+      }, 1000)
+    } catch (err) {
+      setStatusMessage('Could not access microphone')
+      setUploadStatus('error')
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop()
+      setIsRecording(false)
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }
+
+  const discardRecording = () => {
+    setAudioBlob(null)
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    setAudioUrl(null)
+    setDuration(0)
+    setUploadStatus('idle')
+  }
+
+  const uploadRecording = async () => {
+    if (!audioBlob || !sender) return
+
+    setUploading(true)
+    setUploadStatus('idle')
+
+    try {
+      // Compress if file is larger than 3MB
+      let finalBlob = audioBlob
+      let extension = 'm4a'
+      
+      if (audioBlob.size > 3 * 1024 * 1024) {
+        setStatusMessage('Compressing...')
+        finalBlob = await compressAudio(audioBlob)
+        extension = 'wav'
+      }
+
+      const formData = new FormData()
+      const filename = `voice-${new Date().toISOString()}.${extension}`
+      formData.append('file', finalBlob, filename)
+      formData.append('sender', sender)
+      formData.append('title', new Date().toLocaleDateString('en-US', { 
+        month: 'long', 
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit'
+      }))
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+
       if (res.ok) {
+        setUploadStatus('success')
+        setStatusMessage('Sent!')
+        setAudioBlob(null)
+        if (audioUrl) URL.revokeObjectURL(audioUrl)
+        setAudioUrl(null)
+        setDuration(0)
+      } else {
         const data = await res.json()
-        setMessages(data.messages || [])
+        setUploadStatus('error')
+        setStatusMessage(data.error || 'Failed to send')
       }
     } catch (error) {
-      console.error('Failed to fetch messages:', error)
+      setUploadStatus('error')
+      setStatusMessage('Network error')
     } finally {
-      setLoading(false)
+      setUploading(false)
+      setCompressing(false)
     }
   }
 
-  const markAsRead = (url: string) => {
-    const newRead = new Set(readMessages)
-    newRead.add(url)
-    setReadMessages(newRead)
-    localStorage.setItem('sesler-read', JSON.stringify(Array.from(newRead)))
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString)
-    const turkeyTime = toZonedTime(date, 'Europe/Istanbul')
-    return format(turkeyTime, "d MMMM yyyy 'at' HH:mm")
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
-  const handlePlay = (url: string) => {
-    if (currentPlaying && currentPlaying !== url) {
-      const currentAudio = audioRefs.current[currentPlaying]
-      if (currentAudio) {
-        currentAudio.pause()
-      }
-    }
-    setCurrentPlaying(url)
-    markAsRead(url)
-  }
-
-  const handleEnded = () => {
-    setCurrentPlaying(null)
-  }
-
-  const unreadCount = messages.filter(m => !readMessages.has(m.url)).length
-
-  if (loading) {
+  // Login screen
+  if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-2 border-burgundy-300 border-t-burgundy-600 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-burgundy-500 font-serif italic">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center py-12 px-4">
+        <div className="w-full max-w-sm">
+          <div className="bg-white/60 backdrop-blur-sm rounded-2xl p-8 warm-glow border border-warm-200/50">
+            <h1 className="font-display text-3xl text-burgundy-700 text-center mb-8">
+              Sesler
+            </h1>
+
+            <form onSubmit={handleAuth} className="space-y-4">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-warm-200 bg-white/80 font-serif text-burgundy-700 placeholder-burgundy-300 focus:outline-none focus:ring-2 focus:ring-burgundy-300 text-center"
+                placeholder="Password"
+              />
+
+              {authError && (
+                <p className="font-serif text-sm text-red-500 text-center">{authError}</p>
+              )}
+
+              <button
+                type="submit"
+                className="w-full py-3 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors"
+              >
+                Enter
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     )
   }
 
-  return (
-    <div className="min-h-screen py-12 px-4">
-      <div className="max-w-2xl mx-auto">
-        {/* Header */}
-        <header className="text-center mb-12">
-          <h1 className="font-display text-4xl md:text-5xl text-burgundy-700 mb-3">
+  // Sender selection screen
+  if (!sender) {
+    return (
+      <div className="min-h-screen flex items-center justify-center py-12 px-4">
+        <div className="w-full max-w-sm text-center">
+          <h1 className="font-display text-3xl text-burgundy-700 mb-2">
             Sesler
           </h1>
-          <p className="font-serif text-lg text-burgundy-400 italic">
-            {unreadCount > 0 ? `${unreadCount} new` : 'All caught up'}
+          <p className="font-serif text-burgundy-400 italic mb-10">
+            Who is this?
           </p>
-        </header>
 
-        {/* Messages */}
-        {messages.length === 0 ? (
-          <div className="text-center py-16">
-            <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-warm-100 flex items-center justify-center">
-              <svg className="w-8 h-8 text-burgundy-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-              </svg>
-            </div>
-            <p className="font-serif text-xl text-burgundy-500 italic">
-              No messages yet...
-            </p>
-          </div>
-        ) : (
           <div className="space-y-4">
-            {messages.map((message, index) => {
-              const isUnread = !readMessages.has(message.url)
-              const isPlaying = currentPlaying === message.url
-              
-              return (
-                <article 
-                  key={message.url}
-                  className={`rounded-2xl p-5 transition-all duration-300 ${
-                    isUnread 
-                      ? 'bg-burgundy-50 border-2 border-burgundy-200' 
-                      : 'bg-white/60 border border-warm-200/50'
-                  }`}
-                >
-                  <div className="flex items-start gap-4">
-                    {/* Unread indicator */}
-                    <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors duration-300 ${
-                      isPlaying 
-                        ? 'bg-burgundy-500 text-white' 
-                        : isUnread
-                          ? 'bg-burgundy-500 text-white'
-                          : 'bg-warm-100 text-burgundy-400'
-                    }`}>
-                      {isPlaying ? (
-                        <svg className="w-4 h-4 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
-                          <rect x="6" y="4" width="4" height="16" rx="1" />
-                          <rect x="14" y="4" width="4" height="16" rx="1" />
-                        </svg>
-                      ) : isUnread ? (
-                        <span className="text-xs font-bold">NEW</span>
-                      ) : (
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                        </svg>
-                      )}
-                    </div>
+            <button
+              onClick={() => setSender('dc')}
+              className="w-full py-4 px-6 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif text-lg rounded-xl transition-all duration-300"
+            >
+              Ziya (DC)
+            </button>
+            <button
+              onClick={() => setSender('izmir')}
+              className="w-full py-4 px-6 bg-warm-500 hover:bg-warm-400 text-white font-serif text-lg rounded-xl transition-all duration-300"
+            >
+              Gulin (Izmir)
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
-                    <div className="flex-grow min-w-0">
-                      {/* Title/Date */}
-                      <div className="flex items-center gap-2 mb-1">
-                        <h2 className={`font-display text-lg ${isUnread ? 'text-burgundy-700 font-semibold' : 'text-burgundy-600'}`}>
-                          {message.title || `Message ${messages.length - index}`}
-                        </h2>
-                        {message.sender && (
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${
-                            message.sender === 'dc' 
-                              ? 'bg-burgundy-100 text-burgundy-600' 
-                              : 'bg-warm-200 text-warm-600'
-                          }`}>
-                            {message.sender === 'dc' ? 'DC' : 'Izmir'}
-                          </span>
-                        )}
-                      </div>
-                      <p className="font-serif text-sm text-burgundy-400 mb-3">
-                        {formatDate(message.uploadedAt)}
-                      </p>
+  // Recording interface
+  return (
+    <div className="min-h-screen flex items-center justify-center py-12 px-4">
+      <div className="w-full max-w-sm text-center">
+        
+        <h1 className="font-display text-3xl text-burgundy-700 mb-2">
+          Sesler
+        </h1>
+        <p className="font-serif text-burgundy-400 mb-8">
+          From <span className="font-semibold">{sender === 'dc' ? 'DC' : 'Izmir'}</span>
+          <button 
+            onClick={() => setSender(null)} 
+            className="ml-2 text-burgundy-300 hover:text-burgundy-500 text-sm"
+          >
+            (change)
+          </button>
+        </p>
 
-                      {/* Audio Player */}
-                      <audio
-                        ref={el => { audioRefs.current[message.url] = el }}
-                        src={message.url}
-                        controls
-                        className="w-full h-10 rounded-lg"
-                        onPlay={() => handlePlay(message.url)}
-                        onEnded={handleEnded}
-                        onPause={() => currentPlaying === message.url && setCurrentPlaying(null)}
-                        preload="metadata"
-                      />
-                    </div>
-                  </div>
-                </article>
-              )
-            })}
+        {/* Status message */}
+        {uploadStatus !== 'idle' && (
+          <div className={`mb-8 p-4 rounded-xl font-serif ${
+            uploadStatus === 'success' 
+              ? 'bg-sage-100 text-sage-600' 
+              : 'bg-red-50 text-red-600'
+          }`}>
+            {statusMessage}
           </div>
         )}
 
-        {/* Footer */}
-        <footer className="mt-12 text-center">
-          <a 
-            href="/upload" 
-            className="inline-block px-6 py-3 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors"
+        {/* Compressing indicator */}
+        {compressing && (
+          <div className="mb-8 p-4 rounded-xl font-serif bg-warm-100 text-burgundy-600">
+            Compressing audio...
+          </div>
+        )}
+
+        {/* Recording button */}
+        {!audioBlob && (
+          <button
+            onClick={isRecording ? stopRecording : startRecording}
+            className={`w-32 h-32 rounded-full flex items-center justify-center mx-auto transition-all duration-300 ${
+              isRecording 
+                ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
+                : 'bg-burgundy-500 hover:bg-burgundy-600'
+            }`}
           >
-            Record a message
-          </a>
-          <p className="font-serif text-sm text-burgundy-300 mt-6 italic">
-            DC & Izmir
+            {isRecording ? (
+              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+            )}
+          </button>
+        )}
+
+        {/* Timer */}
+        {(isRecording || audioBlob) && (
+          <p className="font-serif text-2xl text-burgundy-600 mt-6">
+            {formatTime(duration)}
           </p>
-        </footer>
+        )}
+
+        {/* File size indicator */}
+        {audioBlob && (
+          <p className="font-serif text-sm text-burgundy-400 mt-2">
+            {formatSize(audioBlob.size)}
+            {audioBlob.size > 3 * 1024 * 1024 && ' (will compress)'}
+          </p>
+        )}
+
+        {/* Instructions */}
+        {!audioBlob && !isRecording && (
+          <p className="font-serif text-burgundy-400 mt-6">
+            Tap to record
+          </p>
+        )}
+
+        {isRecording && (
+          <p className="font-serif text-burgundy-400 mt-4">
+            Tap to stop
+          </p>
+        )}
+
+        {/* Playback and actions */}
+        {audioBlob && audioUrl && (
+          <div className="mt-8 space-y-6">
+            <audio src={audioUrl} controls className="w-full" />
+            
+            <div className="flex gap-4">
+              <button
+                onClick={discardRecording}
+                className="flex-1 py-3 px-4 bg-warm-200 hover:bg-warm-300 text-burgundy-600 font-serif rounded-xl transition-colors"
+              >
+                Discard
+              </button>
+              <button
+                onClick={uploadRecording}
+                disabled={uploading || compressing}
+                className="flex-1 py-3 px-4 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors disabled:opacity-50"
+              >
+                {compressing ? 'Compressing...' : uploading ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Link to listen */}
+        <a 
+          href="/sesler" 
+          className="inline-block mt-12 font-serif text-sm text-burgundy-400 hover:text-burgundy-600 transition-colors"
+        >
+          Listen to messages
+        </a>
       </div>
     </div>
   )
