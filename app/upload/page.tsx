@@ -13,17 +13,20 @@ export default function UploadPage() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [duration, setDuration] = useState(0)
   const [uploading, setUploading] = useState(false)
+  const [compressing, setCompressing] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [statusMessage, setStatusMessage] = useState('')
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<NodeJS.Timeout | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current)
       if (audioUrl) URL.revokeObjectURL(audioUrl)
+      if (audioContextRef.current) audioContextRef.current.close()
     }
   }, [audioUrl])
 
@@ -35,6 +38,92 @@ export default function UploadPage() {
     } else {
       setAuthError('Incorrect password')
     }
+  }
+
+  // Compress audio using Web Audio API
+  const compressAudio = async (blob: Blob): Promise<Blob> => {
+    setCompressing(true)
+    try {
+      const audioContext = new AudioContext({ sampleRate: 8000 }) // Phone quality
+      audioContextRef.current = audioContext
+      
+      const arrayBuffer = await blob.arrayBuffer()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+      
+      // Convert to mono and downsample heavily
+      const offlineContext = new OfflineAudioContext(
+        1, // mono
+        audioBuffer.duration * 8000,
+        8000 // phone quality - very small files
+      )
+      
+      const source = offlineContext.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(offlineContext.destination)
+      source.start()
+      
+      const renderedBuffer = await offlineContext.startRendering()
+      
+      // Convert to WAV
+      const wavBlob = audioBufferToWav(renderedBuffer)
+      
+      return wavBlob
+    } catch (error) {
+      console.error('Compression failed, using original:', error)
+      return blob
+    } finally {
+      setCompressing(false)
+    }
+  }
+
+  // Convert AudioBuffer to WAV blob
+  const audioBufferToWav = (buffer: AudioBuffer): Blob => {
+    const numChannels = buffer.numberOfChannels
+    const sampleRate = buffer.sampleRate
+    const format = 1 // PCM
+    const bitDepth = 16
+    
+    const bytesPerSample = bitDepth / 8
+    const blockAlign = numChannels * bytesPerSample
+    
+    const data = buffer.getChannelData(0)
+    const samples = data.length
+    const dataSize = samples * blockAlign
+    const bufferSize = 44 + dataSize
+    
+    const arrayBuffer = new ArrayBuffer(bufferSize)
+    const view = new DataView(arrayBuffer)
+    
+    // WAV header
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i))
+      }
+    }
+    
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + dataSize, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, format, true)
+    view.setUint16(22, numChannels, true)
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * blockAlign, true)
+    view.setUint16(32, blockAlign, true)
+    view.setUint16(34, bitDepth, true)
+    writeString(36, 'data')
+    view.setUint32(40, dataSize, true)
+    
+    // Write audio data
+    let offset = 44
+    for (let i = 0; i < samples; i++) {
+      const sample = Math.max(-1, Math.min(1, data[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true)
+      offset += 2
+    }
+    
+    return new Blob([arrayBuffer], { type: 'audio/wav' })
   }
 
   const startRecording = async () => {
@@ -97,9 +186,21 @@ export default function UploadPage() {
     setUploadStatus('idle')
 
     try {
+      // Always compress audio
+      setStatusMessage('Compressing...')
+      const compressedBlob = await compressAudio(audioBlob)
+      
+      // Check if still too large (Vercel limit is 4.5MB)
+      if (compressedBlob.size > 4 * 1024 * 1024) {
+        setUploadStatus('error')
+        setStatusMessage(`File too large (${(compressedBlob.size / (1024 * 1024)).toFixed(1)}MB). Please record under 5 minutes.`)
+        setUploading(false)
+        return
+      }
+
       const formData = new FormData()
-      const filename = `voice-${new Date().toISOString()}.m4a`
-      formData.append('file', audioBlob, filename)
+      const filename = `voice-${new Date().toISOString()}.wav`
+      formData.append('file', compressedBlob, filename)
       formData.append('sender', sender)
       formData.append('title', new Date().toLocaleDateString('en-US', { 
         month: 'long', 
@@ -108,6 +209,7 @@ export default function UploadPage() {
         minute: '2-digit'
       }))
 
+      setStatusMessage('Sending...')
       const res = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
@@ -130,6 +232,7 @@ export default function UploadPage() {
       setStatusMessage('Network error')
     } finally {
       setUploading(false)
+      setCompressing(false)
     }
   }
 
@@ -137,6 +240,11 @@ export default function UploadPage() {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
   // Login screen
@@ -235,6 +343,13 @@ export default function UploadPage() {
           </div>
         )}
 
+        {/* Compressing indicator */}
+        {compressing && (
+          <div className="mb-8 p-4 rounded-xl font-serif bg-warm-100 text-burgundy-600">
+            Compressing audio...
+          </div>
+        )}
+
         {/* Recording button */}
         {!audioBlob && (
           <button
@@ -260,8 +375,22 @@ export default function UploadPage() {
 
         {/* Timer */}
         {(isRecording || audioBlob) && (
-          <p className="font-serif text-2xl text-burgundy-600 mt-6">
+          <p className={`font-serif text-2xl mt-6 ${duration > 240 ? 'text-red-500' : 'text-burgundy-600'}`}>
             {formatTime(duration)}
+          </p>
+        )}
+
+        {/* Warning for long recordings */}
+        {isRecording && duration > 240 && (
+          <p className="font-serif text-sm text-red-500 mt-2">
+            Recording is getting long - keep under 5 min for best results
+          </p>
+        )}
+
+        {/* File size indicator */}
+        {audioBlob && (
+          <p className="font-serif text-sm text-burgundy-400 mt-2">
+            {formatSize(audioBlob.size)} • will be compressed
           </p>
         )}
 
@@ -292,10 +421,10 @@ export default function UploadPage() {
               </button>
               <button
                 onClick={uploadRecording}
-                disabled={uploading}
+                disabled={uploading || compressing}
                 className="flex-1 py-3 px-4 bg-burgundy-500 hover:bg-burgundy-600 text-white font-serif rounded-xl transition-colors disabled:opacity-50"
               >
-                {uploading ? 'Sending...' : 'Send'}
+                {uploading ? (compressing ? 'Compressing...' : 'Sending...') : 'Send'}
               </button>
             </div>
           </div>
