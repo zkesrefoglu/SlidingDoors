@@ -17,10 +17,13 @@ export default function UploadPage() {
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [statusMessage, setStatusMessage] = useState('')
   
+  const MAX_DURATION = 300 // 5 minutes in seconds
+  
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const durationRef = useRef(0)
 
   useEffect(() => {
     return () => {
@@ -149,10 +152,24 @@ export default function UploadPage() {
       mediaRecorder.start()
       setIsRecording(true)
       setDuration(0)
+      durationRef.current = 0
       setUploadStatus('idle')
       
       timerRef.current = setInterval(() => {
-        setDuration(d => d + 1)
+        durationRef.current += 1
+        setDuration(durationRef.current)
+        
+        // Auto-stop at max duration
+        if (durationRef.current >= MAX_DURATION) {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            mediaRecorderRef.current.stop()
+            setIsRecording(false)
+            if (timerRef.current) {
+              clearInterval(timerRef.current)
+              timerRef.current = null
+            }
+          }
+        }
       }, 1000)
     } catch (err) {
       setStatusMessage('Could not access microphone')
@@ -176,6 +193,7 @@ export default function UploadPage() {
     if (audioUrl) URL.revokeObjectURL(audioUrl)
     setAudioUrl(null)
     setDuration(0)
+    durationRef.current = 0
     setUploadStatus('idle')
   }
 
@@ -222,6 +240,7 @@ export default function UploadPage() {
         if (audioUrl) URL.revokeObjectURL(audioUrl)
         setAudioUrl(null)
         setDuration(0)
+        durationRef.current = 0
       } else {
         const data = await res.json()
         setUploadStatus('error')
@@ -352,38 +371,77 @@ export default function UploadPage() {
 
         {/* Recording button */}
         {!audioBlob && (
-          <button
-            onClick={isRecording ? stopRecording : startRecording}
-            className={`w-32 h-32 rounded-full flex items-center justify-center mx-auto transition-all duration-300 ${
-              isRecording 
-                ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
-                : 'bg-burgundy-500 hover:bg-burgundy-600'
-            }`}
-          >
-            {isRecording ? (
-              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
-              </svg>
-            ) : (
-              <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+          <div className="relative w-36 h-36 mx-auto">
+            {/* Progress ring */}
+            {isRecording && (
+              <svg className="absolute inset-0 w-full h-full -rotate-90">
+                <circle
+                  cx="72"
+                  cy="72"
+                  r="68"
+                  fill="none"
+                  stroke="#E8D5D5"
+                  strokeWidth="4"
+                />
+                <circle
+                  cx="72"
+                  cy="72"
+                  r="68"
+                  fill="none"
+                  stroke={duration > 240 ? '#EF4444' : '#8B4444'}
+                  strokeWidth="4"
+                  strokeDasharray={`${(duration / MAX_DURATION) * 427} 427`}
+                  strokeLinecap="round"
+                />
               </svg>
             )}
-          </button>
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              className={`absolute inset-2 rounded-full flex items-center justify-center transition-all duration-300 ${
+                isRecording 
+                  ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
+                  : 'bg-burgundy-500 hover:bg-burgundy-600'
+              }`}
+            >
+              {isRecording ? (
+                <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="2" />
+                </svg>
+              ) : (
+                <svg className="w-12 h-12 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                  <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+              )}
+            </button>
+          </div>
         )}
 
         {/* Timer */}
         {(isRecording || audioBlob) && (
-          <p className={`font-serif text-2xl mt-6 ${duration > 240 ? 'text-red-500' : 'text-burgundy-600'}`}>
-            {formatTime(duration)}
-          </p>
+          <div className="mt-6">
+            <p className={`font-serif text-2xl ${duration > 240 ? 'text-red-500' : 'text-burgundy-600'}`}>
+              {formatTime(duration)}
+            </p>
+            {isRecording && (
+              <p className={`font-serif text-sm mt-1 ${duration > 240 ? 'text-red-400' : 'text-burgundy-400'}`}>
+                {formatTime(MAX_DURATION - duration)} remaining
+              </p>
+            )}
+          </div>
         )}
 
         {/* Warning for long recordings */}
-        {isRecording && duration > 240 && (
+        {isRecording && duration > 240 && duration < MAX_DURATION && (
           <p className="font-serif text-sm text-red-500 mt-2">
-            Recording is getting long - keep under 5 min for best results
+            Less than a minute left!
+          </p>
+        )}
+
+        {/* Auto-stopped message */}
+        {!isRecording && audioBlob && duration >= MAX_DURATION && (
+          <p className="font-serif text-sm text-burgundy-500 mt-2">
+            Recording stopped at 5 minute limit
           </p>
         )}
 
